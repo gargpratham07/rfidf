@@ -1,0 +1,16 @@
+../Core/Src/main.c:60:5:__io_putchar	24	static
+../Core/Src/main.c:67:13:buzzer_beep	16	static
+../Core/Src/main.c:74:13:high_beep	32	static,ignoring_inline_asm
+../Core/Src/main.c:84:13:beep_ok	8	static
+../Core/Src/main.c:85:13:beep_done	8	static
+../Core/Src/main.c:86:13:beep_low_alert	8	static
+../Core/Src/main.c:88:13:print_uid_uart	32	static
+../Core/Src/main.c:92:13:print_slot_info_uart	48	static
+../Core/Src/main.c:108:20:get_username_str	32	static
+../Core/Src/main.c:120:13:wallet_preload_local	64	static
+../Core/Src/main.c:144:5:main	296	static
+../Core/Src/main.c:437:13:MX_SPI1_Init	8	static
+../Core/Src/main.c:452:13:MX_USART2_UART_Init	8	static
+../Core/Src/main.c:464:13:MX_GPIO_Init	48	static
+../Core/Src/main.c:519:6:SystemClock_Config	160	static
+../Core/Src/main.c:546:6:Error_Handler	4	static,ignoring_inline_asm

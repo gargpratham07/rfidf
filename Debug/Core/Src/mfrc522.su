@@ -1,0 +1,17 @@
+../Core/Src/mfrc522.c:13:20:MFRC522_Select	8	static
+../Core/Src/mfrc522.c:16:20:MFRC522_Unselect	8	static
+../Core/Src/mfrc522.c:21:6:MFRC522_WriteRegister	24	static
+../Core/Src/mfrc522.c:30:9:MFRC522_ReadRegister	24	static
+../Core/Src/mfrc522.c:43:6:MFRC522_SetBitMask	24	static
+../Core/Src/mfrc522.c:49:6:MFRC522_ClearBitMask	24	static
+../Core/Src/mfrc522.c:56:6:MFRC522_Reset	8	static
+../Core/Src/mfrc522.c:63:6:MFRC522_AntennaOn	16	static
+../Core/Src/mfrc522.c:71:6:MFRC522_AntennaOff	8	static
+../Core/Src/mfrc522.c:77:13:MFRC522_CalculateCRC	40	static
+../Core/Src/mfrc522.c:103:6:MFRC522_Init	8	static
+../Core/Src/mfrc522.c:127:9:MFRC522_ToCard	48	static
+../Core/Src/mfrc522.c:205:9:MFRC522_Request	32	static
+../Core/Src/mfrc522.c:223:9:MFRC522_Anticoll	32	static
+../Core/Src/mfrc522.c:250:9:MFRC522_SelectTag	40	static
+../Core/Src/mfrc522.c:280:6:MFRC522_Halt	24	static
+../Core/Src/mfrc522.c:294:9:MFRC522_Check	24	static

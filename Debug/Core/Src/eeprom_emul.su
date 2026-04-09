@@ -1,0 +1,7 @@
+../Core/Src/eeprom_emul.c:21:13:store_int32_le	16	static
+../Core/Src/eeprom_emul.c:27:16:load_int32_le	16	static
+../Core/Src/eeprom_emul.c:31:10:eeprom_emul_storage_size	4	static
+../Core/Src/eeprom_emul.c:33:5:eeprom_emul_init	16	static
+../Core/Src/eeprom_emul.c:45:5:eeprom_emul_erase_all	24	static
+../Core/Src/eeprom_emul.c:66:5:eeprom_emul_save_all	120	dynamic,bounded
+../Core/Src/eeprom_emul.c:129:5:eeprom_emul_load_all	136	dynamic,bounded

@@ -1,0 +1,9 @@
+../Core/Src/lcd.c:9:13:lcd_udelay	16	static,ignoring_inline_asm
+../Core/Src/lcd.c:15:13:lcd_pulse_enable	8	static
+../Core/Src/lcd.c:24:13:lcd_write_nibble	16	static
+../Core/Src/lcd.c:38:13:lcd_send_byte	16	static
+../Core/Src/lcd.c:51:6:lcd_init	8	static
+../Core/Src/lcd.c:81:6:lcd_clear	8	static
+../Core/Src/lcd.c:87:13:lcd_set_line	24	static
+../Core/Src/lcd.c:95:6:lcd_print	16	static
+../Core/Src/lcd.c:103:6:lcd_print_line	48	static

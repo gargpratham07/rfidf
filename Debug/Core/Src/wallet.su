@@ -1,0 +1,8 @@
+../Core/Src/wallet.c:7:6:wallet_init	8	static
+../Core/Src/wallet.c:13:5:wallet_uid_equal	16	static
+../Core/Src/wallet.c:18:5:wallet_find_slot_by_uid	24	static
+../Core/Src/wallet.c:26:5:wallet_find_or_create_slot	24	static
+../Core/Src/wallet.c:44:9:wallet_get_balance_by_slot	16	static
+../Core/Src/wallet.c:51:6:wallet_add_transaction_by_slot	24	static
+../Core/Src/wallet.c:68:9:wallet_get_txcount_by_slot	16	static
+../Core/Src/wallet.c:75:5:wallet_get_tx_by_slot	32	static

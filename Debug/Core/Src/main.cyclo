@@ -1,0 +1,16 @@
+../Core/Src/main.c:60:5:__io_putchar	1
+../Core/Src/main.c:67:13:buzzer_beep	1
+../Core/Src/main.c:74:13:high_beep	4
+../Core/Src/main.c:84:13:beep_ok	1
+../Core/Src/main.c:85:13:beep_done	1
+../Core/Src/main.c:86:13:beep_low_alert	1
+../Core/Src/main.c:88:13:print_uid_uart	1
+../Core/Src/main.c:92:13:print_slot_info_uart	4
+../Core/Src/main.c:108:20:get_username_str	5
+../Core/Src/main.c:120:13:wallet_preload_local	10
+../Core/Src/main.c:144:5:main	37
+../Core/Src/main.c:437:13:MX_SPI1_Init	2
+../Core/Src/main.c:452:13:MX_USART2_UART_Init	2
+../Core/Src/main.c:464:13:MX_GPIO_Init	1
+../Core/Src/main.c:519:6:SystemClock_Config	4
+../Core/Src/main.c:546:6:Error_Handler	1
