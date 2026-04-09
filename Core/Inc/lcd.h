@@ -1,118 +1,83 @@
-#ifndef __LCD_H
-#define __LCD_H
+/*
+ ******************************************************************************
+ * @file           : lcd.h
+ * @brief          : 16x2 HD44780 LCD driver (4-bit mode) interface
+ * @author         : Group Project — SNU ECE 2025
+ * 
+ * Provides API for initializing and controlling a 16x2 character LCD display
+ * in 4-bit mode via GPIO. Pin definitions are centralized in config.h.
+ * Supports text output with line addressing (1-based).
+ ******************************************************************************
+ */
+
+#ifndef LCD_H
+#define LCD_H
 
 #include "stm32f3xx_hal.h"
+#include "config.h"
 #include <stdint.h>
 
-/* ------------------------------------------------------------------
-   Provide sane defaults / aliasing so different naming conventions work.
-   If your project already defines any of these in a different header,
-   it will not be redefined here.
-   ------------------------------------------------------------------ */
+/* ============================================================================
+ * Pin Definitions (using config.h for consistency)
+ * ============================================================================ */
 
-/* Preferred names used by lcd.c */
-#ifndef LCD_RS_PORT
-  #ifdef LCD_RS_GPIO_Port
-    #define LCD_RS_PORT LCD_RS_GPIO_Port
-  #else
-    #define LCD_RS_PORT GPIOB
-  #endif
-#endif
+#define LCD_RS_PORT     LCD_RS_GPIO_Port
+#define LCD_RS_PIN      LCD_RS_Pin
 
-#ifndef LCD_RS_PIN
-  #ifdef LCD_RS_Pin
-    #define LCD_RS_PIN LCD_RS_Pin
-  #else
-    #define LCD_RS_PIN GPIO_PIN_0
-  #endif
-#endif
+#define LCD_EN_PORT     LCD_EN_GPIO_Port
+#define LCD_EN_PIN      LCD_EN_Pin
 
-/* Enable / E pin alias */
-#ifndef LCD_EN_PORT
-  #ifdef LCD_E_GPIO_Port
-    #define LCD_EN_PORT LCD_E_GPIO_Port
-  #elif defined(LCD_E_PORT)
-    #define LCD_EN_PORT LCD_E_PORT
-  #else
-    #define LCD_EN_PORT GPIOB
-  #endif
-#endif
+#define LCD_D4_PORT     LCD_D4_GPIO_Port
+#define LCD_D4_PIN      LCD_D4_Pin
 
-#ifndef LCD_EN_PIN
-  #ifdef LCD_E_Pin
-    #define LCD_EN_PIN LCD_E_Pin
-  #elif defined(LCD_E_PIN)
-    #define LCD_EN_PIN LCD_E_PIN
-  #else
-    #define LCD_EN_PIN GPIO_PIN_1
-  #endif
-#endif
+#define LCD_D5_PORT     LCD_D5_GPIO_Port
+#define LCD_D5_PIN      LCD_D5_Pin
 
-/* Data pins D4..D7 */
-#ifndef LCD_D4_PORT
-  #ifdef LCD_D4_GPIO_Port
-    #define LCD_D4_PORT LCD_D4_GPIO_Port
-  #else
-    #define LCD_D4_PORT GPIOB
-  #endif
-#endif
-#ifndef LCD_D4_PIN
-  #ifdef LCD_D4_Pin
-    #define LCD_D4_PIN LCD_D4_Pin
-  #else
-    #define LCD_D4_PIN GPIO_PIN_2
-  #endif
-#endif
+#define LCD_D6_PORT     LCD_D6_GPIO_Port
+#define LCD_D6_PIN      LCD_D6_Pin
 
-#ifndef LCD_D5_PORT
-  #ifdef LCD_D5_GPIO_Port
-    #define LCD_D5_PORT LCD_D5_GPIO_Port
-  #else
-    #define LCD_D5_PORT GPIOB
-  #endif
-#endif
-#ifndef LCD_D5_PIN
-  #ifdef LCD_D5_Pin
-    #define LCD_D5_PIN LCD_D5_Pin
-  #else
-    #define LCD_D5_PIN GPIO_PIN_3
-  #endif
-#endif
+#define LCD_D7_PORT     LCD_D7_GPIO_Port
+#define LCD_D7_PIN      LCD_D7_Pin
 
-#ifndef LCD_D6_PORT
-  #ifdef LCD_D6_GPIO_Port
-    #define LCD_D6_PORT LCD_D6_GPIO_Port
-  #else
-    #define LCD_D6_PORT GPIOB
-  #endif
-#endif
-#ifndef LCD_D6_PIN
-  #ifdef LCD_D6_Pin
-    #define LCD_D6_PIN LCD_D6_Pin
-  #else
-    #define LCD_D6_PIN GPIO_PIN_4
-  #endif
-#endif
+/* ============================================================================
+ * Public API Functions
+ * ============================================================================ */
 
-#ifndef LCD_D7_PORT
-  #ifdef LCD_D7_GPIO_Port
-    #define LCD_D7_PORT LCD_D7_GPIO_Port
-  #else
-    #define LCD_D7_PORT GPIOB
-  #endif
-#endif
-#ifndef LCD_D7_PIN
-  #ifdef LCD_D7_Pin
-    #define LCD_D7_PIN LCD_D7_Pin
-  #else
-    #define LCD_D7_PIN GPIO_PIN_5
-  #endif
-#endif
-
-/* Public API */
+/**
+ * lcd_init
+ * @brief Initialize LCD display (4-bit mode, 2 lines)
+ * Performs power-up sequence and configures display for operation
+ * @param None
+ * @return void
+ */
 void lcd_init(void);
+
+/**
+ * lcd_clear
+ * @brief Clear display and return cursor to home position
+ * @param None
+ * @return void
+ */
 void lcd_clear(void);
+
+/**
+ * lcd_print
+ * @brief Print string at current cursor position
+ * String is truncated if longer than LCD_LINE_MAX_CHARS
+ * @param str: Null-terminated string to print
+ * @return void
+ */
 void lcd_print(const char *str);
+
+/**
+ * lcd_print_line
+ * @brief Print string at start of specified line (1 or 2)
+ * Line 1 is first row, Line 2 is second row on 16x2 display
+ * String is truncated if longer than LCD_LINE_MAX_CHARS
+ * @param line: Line number (1 or 2)
+ * @param str: Null-terminated string to print
+ * @return void (silently ignores invalid line number)
+ */
 void lcd_print_line(uint8_t line, const char *str);
 
-#endif /* __LCD_H */
+#endif /* LCD_H */

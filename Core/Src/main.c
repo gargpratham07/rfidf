@@ -1,439 +1,121 @@
-/* Core/Src/main.c
-   Fixed: show name only on first detection, show "<NAME>'s Wallet" instead of Slot N,
-   robust UID->name mapping, improved menu behavior.
-   Replace existing main.c (backup first).
-*/
+/*
+ ******************************************************************************
+ * @file           : main.c
+ * @brief          : System initialization and state machine entry point
+ * @author         : Group Project — SNU ECE 2025
+ *
+ * Initializes the STM32F303RE microcontroller including system clock, GPIO
+ * peripherals, SPI1 (RFID reader), and UART2 (debug console). After all
+ * hardware is configured, transfers control to state_machine_run() which
+ * implements the RFID wallet application logic. This file contains only
+ * initialization code; all business logic resides in Core/Src/state_machine.c
+ * and supporting driver modules.
+ ******************************************************************************
+ */
 
 #include "main.h"
-#include "lcd.h"
-#include "mfrc522.h"
-#include "wallet.h"
-#include <stdio.h>
-#include <string.h>
-#include <stdint.h>
-#include <stdlib.h> /* llabs */
+#include "config.h"
+#include "state_machine.h"
 
-#define STABLE_COUNT 2
-#define HOLD_TIME_MS 800
-#define MENU_INACTIVITY_TIMEOUT_MS 30000
-#define PRELOAD_COUNT 4
-#define LOW_BALANCE_THRESHOLD 100 /* paise = 1.00 */
-
-/* ---------- Users mapping ---------- */
-typedef struct {
-    uint8_t uid[5];
-    char name[16];
-} UserInfo;
-
-static UserInfo users[PRELOAD_COUNT] = {
-    { {0x47,0x5A,0x95,0xB2,0x3A}, "ROHAN" },
-    { {0xF7,0x88,0x60,0xB2,0xAD}, "ROHIT" },
-    { {0xB7,0xC8,0x64,0xB2,0xA9}, "SNEHA" },
-    { {0x67,0x5B,0x93,0xB2,0x1D}, "DAKSH" }
-};
-
-static const uint8_t preset_uids[PRELOAD_COUNT][5] = {
-    {0x47, 0x5A, 0x95, 0xB2, 0x3A},
-    {0xF7, 0x88, 0x60, 0xB2, 0xAD},
-    {0xB7, 0xC8, 0x64, 0xB2, 0xA9},
-    {0x67, 0x5B, 0x93, 0xB2, 0x1D}
-};
-
-static const int32_t preset_balances[PRELOAD_COUNT] = { 50, 2000, 750, 10000 };
-
-/* ---------- Menu ---------- */
-typedef enum { MENU_BALANCE = 0, MENU_ADD_10, MENU_SUB_1, MENU_HISTORY, MENU_EXIT, MENU_COUNT } MenuOption;
-static const char *menu_text[MENU_COUNT] = { "Show Balance", "Add 10.00", "Sub 1.00", "Show History", "Exit" };
-
-/* ---------- HW ---------- */
+/** SPI1 handle for MFRC522 communication */
 SPI_HandleTypeDef hspi1;
+
+/** UART2 handle for debug output */
 UART_HandleTypeDef huart2;
 
-/* Forward prototypes */
+/* Function prototypes */
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_SPI1_Init(void);
 void SystemClock_Config(void);
 void Error_Handler(void);
 
-/* ---------- Helpers ---------- */
+/* ============================================================================
+ * Debug Console Redirection
+ * ============================================================================ */
+
+/**
+ * __io_putchar
+ * @brief Printf() redirection to UART2 for debug output
+ * Allows use of printf() throughout application. Each character is transmitted
+ * via HAL_UART_Transmit() to the debug console (115200 baud, 8N1).
+ * @param ch: Character code to output
+ * @return ch (return value for compatibility with putchar signature)
+ */
 int __io_putchar(int ch) {
     uint8_t c = (uint8_t)ch;
     HAL_UART_Transmit(&huart2, &c, 1, HAL_MAX_DELAY);
     return ch;
 }
 
-/* basic beep (blocking) */
-static void buzzer_beep(uint32_t ms) {
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
-    HAL_Delay(ms);
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
-}
+/* ============================================================================
+ * Main Entry Point
+ * ============================================================================ */
 
-/* high/urgent beep approximation */
-static void high_beep(uint32_t ms_total) {
-    uint32_t t_start = HAL_GetTick();
-    while ((HAL_GetTick() - t_start) < ms_total) {
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
-        for (volatile int i = 0; i < 300; ++i) __asm__("nop");
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
-        for (volatile int i = 0; i < 300; ++i) __asm__("nop");
-    }
-}
-
-static void beep_ok(void)   { buzzer_beep(60); }
-static void beep_done(void) { buzzer_beep(120); }
-static void beep_low_alert(void) { high_beep(500); }
-
-static void print_uid_uart(const uint8_t uid[5]) {
-    printf("UID: %02X %02X %02X %02X %02X\r\n", uid[0], uid[1], uid[2], uid[3], uid[4]);
-}
-
-static void print_slot_info_uart(int slot) {
-    if (slot < 0) { printf("Slot invalid\r\n"); return; }
-    int32_t bal = wallet_get_balance_by_slot(slot);
-    printf("Slot %d balance: %ld.%02ld\r\n", slot, (long)(bal/100), (long)llabs(bal%100));
-    uint8_t cnt = wallet_get_txcount_by_slot(slot);
-    printf("Tx count: %d\r\n", cnt);
-    for (uint8_t i = 0; i < cnt; ++i) {
-        WalletTx t;
-        if (wallet_get_tx_by_slot(slot, i, &t) == 0) {
-            printf("  #%lu: %ld.%02ld\r\n", (unsigned long)t.seq,
-                   (long)(t.amount/100), (long)llabs(t.amount%100));
-        }
-    }
-}
-
-/* robust UID->name lookup: compares 5 bytes explicitly */
-static const char* get_username_str(const uint8_t uid[5]) {
-    for (int i = 0; i < PRELOAD_COUNT; ++i) {
-        uint8_t same = 1;
-        for (int b = 0; b < 5; ++b) {
-            if (users[i].uid[b] != uid[b]) { same = 0; break; }
-        }
-        if (same) return users[i].name;
-    }
-    return "UNKNOWN";
-}
-
-/* local preload helper */
-static void wallet_preload_local(const uint8_t uids[][5], const int32_t balances[], int count) {
-    if (!uids || count <= 0) return;
-    if (count > WALLET_MAX_CARDS) count = WALLET_MAX_CARDS;
-    for (int i = 0; i < count; ++i) {
-        const uint8_t *uid = uids[i];
-        int slot = wallet_find_slot_by_uid(uid);
-        if (slot < 0) {
-            slot = wallet_find_or_create_slot(uid);
-            if (slot < 0) {
-                printf("Preload: cannot create slot for UID ");
-                for (int k=0;k<5;k++) printf("%02X ", uid[k]);
-                printf("\r\n");
-                continue;
-            }
-        }
-        if (balances && balances[i] != 0) wallet_add_transaction_by_slot(slot, balances[i]);
-        wallet_add_transaction_by_slot(slot, -150);
-        wallet_add_transaction_by_slot(slot, -50);
-        printf("Preloaded slot %d for UID %02X %02X %02X %02X %02X\r\n",
-               slot, uid[0], uid[1], uid[2], uid[3], uid[4]);
-    }
-}
-
-/* ---------- MAIN ---------- */
+/**
+ * main
+ * @brief System initialization and application entry point
+ * 
+ * Initialization sequence:
+ * 1. HAL_Init() - Initialize STM32 HAL library
+ * 2. SystemClock_Config() - Configure HSI PLL to 72 MHz
+ * 3. MX_GPIO_Init() - Configure GPIO for LCD, RFID, buzzer, buttons
+ * 4. MX_USART2_UART_Init() - Configure UART2 at 115200 baud for debug
+ * 5. MX_SPI1_Init() - Configure SPI1 for RFID reader communication
+ * 6. state_machine_run() - Transfer control to RFID wallet state machine
+ *
+ * @return 0 (never reached, state_machine_run() is infinite loop)
+ */
 int main(void)
 {
+    /* Initialize STM32 HAL (SysTick timer, NVIC, etc.) */
     HAL_Init();
+    
+    /* Configure system clock: HSI (8 MHz) × 9 = 72 MHz */
     SystemClock_Config();
 
+    /* Initialize GPIO pins for all peripherals */
     MX_GPIO_Init();
+    
+    /* Initialize UART2 for debug console */
     MX_USART2_UART_Init();
+    
+    /* Initialize SPI1 for RFID reader */
     MX_SPI1_Init();
 
-    wallet_init();
-    wallet_preload_local(preset_uids, preset_balances, PRELOAD_COUNT);
-
-    /* reset MFRC522 */
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
-    HAL_Delay(50);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
-    HAL_Delay(50);
-    MFRC522_Init();
-    HAL_Delay(50);
-
-    lcd_init();
-    HAL_Delay(50);
-    lcd_clear();
-    lcd_print_line(1, "RFID Wallet");
-    lcd_print_line(2, "Tap Card to Start");
-    HAL_Delay(700);
-    lcd_clear();
-
-    printf("RFID Wallet (names fixed) started.\r\n");
-
-    uint8_t uid[5];
-    int ok = 0, no = 0;
-    int prev_card_present = 0;
-    int card_present = 0;
-
-    int in_menu = 0;
-    int current_slot = -1;
-    int menu_index = 0;
-    uint32_t present_start_tick = 0;
-    uint32_t menu_last_activity = 0;
-
-    /* track whether we've shown welcome already for the current card session */
-    uint8_t welcome_shown = 0;
-
-    while (1) {
-        /* exit button (PC13) active low */
-        uint8_t exit_button_pressed = (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET);
-
-        uint8_t st = MFRC522_Check(uid);
-        if (st == MI_OK) { ok++; no = 0; }
-        else { no++; ok = 0; }
-
-        prev_card_present = card_present;
-        card_present = (ok >= STABLE_COUNT);
-
-        int new_appearance = (!prev_card_present && card_present);
-
-        /* Exit button when in menu: immediate exit */
-        if (in_menu && exit_button_pressed) {
-            in_menu = 0;
-            welcome_shown = 0;
-            lcd_clear();
-            lcd_print_line(1, "Menu exited");
-            lcd_print_line(2, "By button");
-            printf("Menu exited by button.\r\n");
-            HAL_Delay(600);
-            lcd_clear();
-            lcd_print_line(1, "RFID Wallet");
-            lcd_print_line(2, "Ready - Tap Card");
-            /* wait until card removed */
-            while (card_present) {
-                HAL_Delay(80);
-                st = MFRC522_Check(uid);
-                if (st == MI_OK) { ok = STABLE_COUNT; no = 0; card_present = 1; }
-                else { no++; ok = 0; card_present = 0; }
-            }
-            continue;
-        }
-
-        /* Fresh appearance handling */
-        if (new_appearance) {
-            const char *username = get_username_str(uid);
-            print_uid_uart(uid);
-            beep_ok();
-
-            int slot = wallet_find_slot_by_uid(uid);
-
-            /* Show welcome only once per card-present session */
-            if (!welcome_shown) {
-                lcd_clear();
-                lcd_print_line(1, "WELCOME");
-                lcd_print_line(2, username);
-                HAL_Delay(700);
-                welcome_shown = 1;
-            }
-
-            if (slot < 0) {
-                /* unknown card */
-                printf("UNREGISTERED CARD\r\n");
-                lcd_clear();
-                lcd_print_line(1, "UNREGISTERED");
-                lcd_print_line(2, username);
-                buzzer_beep(60); HAL_Delay(80); buzzer_beep(60);
-
-                /* wait for removal */
-                while (card_present) {
-                    HAL_Delay(80);
-                    st = MFRC522_Check(uid);
-                    if (st == MI_OK) { ok = STABLE_COUNT; no = 0; card_present = 1; }
-                    else { no++; ok = 0; card_present = 0; }
-                }
-                welcome_shown = 0;
-                lcd_clear();
-                lcd_print_line(1, "RFID Wallet");
-                lcd_print_line(2, "Ready - Tap Card");
-                continue;
-            }
-
-            /* Enter menu or cycle */
-            if (!in_menu) {
-                in_menu = 1;
-                menu_index = 0;
-                current_slot = slot;
-                menu_last_activity = HAL_GetTick();
-                present_start_tick = HAL_GetTick();
-            } else {
-                /* cycle option on fresh tap */
-                menu_index = (menu_index + 1) % MENU_COUNT;
-                menu_last_activity = HAL_GetTick();
-                present_start_tick = HAL_GetTick();
-            }
-
-            /* show menu text with friendly wallet label instead of "Slot N" */
-            char l1[17]; char l2[17];
-            const char *label = get_username_str(uid);
-            snprintf(l1, sizeof(l1), "%s's Wallet", label);
-            snprintf(l2, sizeof(l2), "%s", menu_text[menu_index]);
-            lcd_clear();
-            lcd_print_line(1, l1);
-            lcd_print_line(2, l2);
-
-            /* immediate low-balance warning when balance option visible */
-            if (menu_index == MENU_BALANCE) {
-                int32_t bal = wallet_get_balance_by_slot(current_slot);
-                if (bal < LOW_BALANCE_THRESHOLD) {
-                    char b[17];
-                    uint32_t absbal = (uint32_t)((bal<0)?-bal:bal);
-                    snprintf(b, sizeof(b), "%lu.%02lu", (unsigned long)(absbal/100), (unsigned long)(absbal%100));
-                    lcd_clear();
-                    lcd_print_line(1, "LOW BALANCE");
-                    lcd_print_line(2, b);
-                    printf("LOW BALANCE slot %d: %ld.%02ld\r\n", current_slot, (long)(bal/100), (long)llabs(bal%100));
-                    beep_low_alert();
-                    HAL_Delay(800);
-                    /* return to menu display */
-                    snprintf(l1, sizeof(l1), "%s's Wallet", label);
-                    snprintf(l2, sizeof(l2), "%s", menu_text[menu_index]);
-                    lcd_clear();
-                    lcd_print_line(1, l1);
-                    lcd_print_line(2, l2);
-                }
-            }
-        }
-
-        /* While card present & in menu -> check hold for selection */
-        if (in_menu && card_present) {
-            if (present_start_tick == 0) present_start_tick = HAL_GetTick();
-            uint32_t held = HAL_GetTick() - present_start_tick;
-            menu_last_activity = HAL_GetTick();
-
-            if (held >= HOLD_TIME_MS) {
-                const char *label = get_username_str(uid);
-                printf("Selecting option %d (%s) for label %s slot %d\r\n", menu_index, menu_text[menu_index], label, current_slot);
-
-                if (menu_index == MENU_BALANCE) {
-                    int32_t bal = wallet_get_balance_by_slot(current_slot);
-                    char buf[17];
-                    uint32_t absbal = (uint32_t)((bal<0)?-bal:bal);
-                    snprintf(buf, sizeof(buf), "Bal %lu.%02lu", (unsigned long)(absbal/100), (unsigned long)(absbal%100));
-                    if (bal < LOW_BALANCE_THRESHOLD) {
-                        lcd_clear();
-                        lcd_print_line(1, "LOW BALANCE");
-                        lcd_print_line(2, buf);
-                        beep_low_alert();
-                    } else {
-                        lcd_clear();
-                        lcd_print_line(1, "Balance");
-                        lcd_print_line(2, buf);
-                        beep_done();
-                    }
-                    print_slot_info_uart(current_slot);
-                } else if (menu_index == MENU_ADD_10) {
-                    wallet_add_transaction_by_slot(current_slot, 1000);
-                    lcd_clear();
-                    lcd_print_line(1, "Added 10.00");
-                    lcd_print_line(2, "Success");
-                    print_slot_info_uart(current_slot);
-                    beep_done();
-                } else if (menu_index == MENU_SUB_1) {
-                    wallet_add_transaction_by_slot(current_slot, -100);
-                    int32_t bal = wallet_get_balance_by_slot(current_slot);
-                    char buf[17];
-                    uint32_t absbal = (uint32_t)((bal<0)?-bal:bal);
-                    snprintf(buf, sizeof(buf), "%lu.%02lu", (unsigned long)(absbal/100), (unsigned long)(absbal%100));
-                    if (bal < LOW_BALANCE_THRESHOLD) {
-                        lcd_clear();
-                        lcd_print_line(1, "LOW BALANCE");
-                        lcd_print_line(2, buf);
-                        beep_low_alert();
-                    } else {
-                        lcd_clear();
-                        lcd_print_line(1, "Subtracted 1.00");
-                        lcd_print_line(2, "Done");
-                        beep_done();
-                    }
-                    print_slot_info_uart(current_slot);
-                } else if (menu_index == MENU_HISTORY) {
-                    uint8_t cnt = wallet_get_txcount_by_slot(current_slot);
-                    printf("History (count=%d):\r\n", cnt);
-                    lcd_clear();
-                    lcd_print_line(1, "History:");
-                    for (uint8_t i=0;i<cnt && i<4;i++) {
-                        WalletTx t;
-                        if (wallet_get_tx_by_slot(current_slot, i, &t) == 0) {
-                            char b[17];
-                            snprintf(b, sizeof(b), "%ld.%02ld", (long)(t.amount/100), (long)llabs(t.amount%100));
-                            lcd_print_line(2, b);
-                            printf(" #%lu: %ld.%02ld\r\n", (unsigned long)t.seq, (long)(t.amount/100), (long)llabs(t.amount%100));
-                            HAL_Delay(900);
-                        }
-                    }
-                    beep_done();
-                } else if (menu_index == MENU_EXIT) {
-                    lcd_clear();
-                    lcd_print_line(1, "Exiting Menu");
-                    lcd_print_line(2, "Remove Card");
-                    beep_ok();
-                    in_menu = 0;
-                }
-
-                /* wait until card removed to avoid retrigger */
-                while (card_present) {
-                    HAL_Delay(80);
-                    st = MFRC522_Check(uid);
-                    if (st == MI_OK) { ok = STABLE_COUNT; no = 0; card_present = 1; }
-                    else { no++; ok = 0; card_present = 0; }
-                }
-                /* reset welcome flag so next new card shows welcome again */
-                welcome_shown = 0;
-                present_start_tick = 0;
-
-                if (in_menu) {
-                    char l1[17], l2[17];
-                    snprintf(l1, sizeof(l1), "%s's Wallet", get_username_str(uid));
-                    snprintf(l2, sizeof(l2), "%s", menu_text[menu_index]);
-                    lcd_clear();
-                    lcd_print_line(1, l1);
-                    lcd_print_line(2, l2);
-                } else {
-                    lcd_clear();
-                    lcd_print_line(1, "RFID Wallet");
-                    lcd_print_line(2, "Ready - Tap Card");
-                }
-            }
-        }
-
-        /* card removed without selection -> stay in menu (user can tap to cycle) */
-        if (in_menu && !card_present) {
-            present_start_tick = 0;
-        }
-
-        /* menu inactivity timeout */
-        if (in_menu && (HAL_GetTick() - menu_last_activity) > MENU_INACTIVITY_TIMEOUT_MS) {
-            in_menu = 0;
-            welcome_shown = 0;
-            lcd_clear();
-            lcd_print_line(1, "Menu Timeout");
-            lcd_print_line(2, "Ready - Tap Card");
-            printf("Menu timeout.\r\n");
-            HAL_Delay(800);
-            lcd_clear();
-            lcd_print_line(1, "RFID Wallet");
-            lcd_print_line(2, "Ready - Tap Card");
-        }
-
-        HAL_Delay(80);
-    }
+    /* Transfer control to RFID wallet state machine (never returns) */
+    state_machine_run();
 
     return 0;
 }
 
-/* ---------------- Peripheral initializers (replace with CubeMX versions if present) ---------------- */
+/* ============================================================================
+ * Peripheral Initialization Functions
+ * ============================================================================ */
 
+/**
+ * MX_SPI1_Init
+ * @brief Configure SPI1 for MFRC522 RFID reader communication
+ *
+ * SPI1 protocol configuration:
+ * - Mode: Master (STM32F303RE controls the clock)
+ * - Data Direction: Full duplex (2-line MOSI/MISO)
+ * - Data Size: 8-bit (MFRC522 register and FIFO access)
+ * - Clock Polarity: Low (CPOL=0, idle level is LOW)
+ * - Clock Phase: 1-edge (CPHA=0, data sampled on leading edge)
+ * - NSS: Software controlled (manual CS management via PA4 GPIO)
+ * - Clock Prescaler: 64 (72 MHz / 64 = 1.125 MHz for MFRC522)
+ * - Bit Order: MSB-first (MFRC522 expects MSB transmitted first)
+ *
+ * GPIO pins configured separately in MX_GPIO_Init():
+ * - PA5: SCK (SPI1 clock output)
+ * - PA6: MISO (SPI1 data input from MFRC522)
+ * - PA7: MOSI (SPI1 data output to MFRC522)
+ * - PA4: CS (manual control for chip select, not hardware)
+ *
+ * @return void
+ * @note Calls Error_Handler() if HAL_SPI_Init() fails
+ */
 static void MX_SPI1_Init(void) {
   hspi1.Instance = SPI1;
   hspi1.Init.Mode = SPI_MODE_MASTER;
@@ -449,6 +131,28 @@ static void MX_SPI1_Init(void) {
   if (HAL_SPI_Init(&hspi1) != HAL_OK) Error_Handler();
 }
 
+/**
+ * MX_USART2_UART_Init
+ * @brief Configure UART2 for debug console at 115200 baud
+ *
+ * UART2 configuration (debug output):
+ * - Baud Rate: 115200 (standard for serial terminals)
+ * - Data Bits: 8 (8 bits per character)
+ * - Stop Bits: 1 (one stop bit, standard)
+ * - Parity: None (no parity bit)
+ * - Flow Control: None (no hardware RTS/CTS, no software Xon/Xoff)
+ * - Mode: TX+RX (transmit and receive)
+ * - Oversampling: 16x (standard STM32 UART oversampling)
+ *
+ * GPIO pins configured separately in MX_GPIO_Init():
+ * - PA9: USART2_TX (debug output)
+ * - PA10: USART2_RX (debug input, not used for this application)
+ *
+ * Usage: Integrated with __io_putchar() for printf() redirection
+ *
+ * @return void
+ * @note Calls Error_Handler() if HAL_UART_Init() fails
+ */
 static void MX_USART2_UART_Init(void) {
   huart2.Instance = USART2;
   huart2.Init.BaudRate = 115200;
@@ -461,53 +165,119 @@ static void MX_USART2_UART_Init(void) {
   if (HAL_UART_Init(&huart2) != HAL_OK) Error_Handler();
 }
 
+/**
+ * MX_GPIO_Init
+ * @brief Configure all GPIO pins for LCD, RFID, buzzer, and buttons
+ *
+ * GPIO Port Organization:
+ * 
+ * GPIOA (Buzzer & SPI):
+ *   PA4:  CS (MFRC522 chip select, active low)
+ *   PA5:  SCK (SPI1 clock, alternate function)
+ *   PA6:  MISO (SPI1 receive, alternate function)
+ *   PA7:  MOSI (SPI1 transmit, alternate function)
+ *   PA8:  Buzzer (active high PWM output)
+ *   PA9:  USART2_TX (debug output, alternate function)
+ *   PA10: USART2_RX (debug input, alternate function)
+ *
+ * GPIOB (LCD control & data & RFID reset):
+ *   PB1:  LCD RS (register select, push-pull output)
+ *   PB2:  LCD EN (strobe/enable, push-pull output)
+ *   PB10: LCD D4 (data bit 4, push-pull output)
+ *   PB11: LCD D5 (data bit 5, push-pull output)
+ *   PB12: LCD D6 (data bit 6, push-pull output) + MFRC522 RST
+ *   PB13: LCD D7 (data bit 7, push-pull output)
+ *
+ * GPIOC (Button input):
+ *   PC13: EXIT button (input with pull-up, active low)
+ *   PC14-PC15: Reserved as inputs (pull-up)
+ *
+ * GPIOF (Reserved):
+ *   No pins used, clock enabled for completeness
+ *
+ * Port Clock Enabling:
+ *   All GPIO port clocks enabled to ensure pin accessibility. This is safe
+ *   and has minimal power impact. Unused ports can be disabled in production.
+ *
+ * @return void
+ * @note No error handling in GPIO init (GPIO_Init() rarely fails at runtime)
+ */
 static void MX_GPIO_Init(void) {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+  /* Enable GPIO port clocks for all used peripherals */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /* LCD PB0..PB5 outputs */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_RESET);
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5;
+  /* ========================================================================
+   * LCD Data & Control Pins (GPIOB)
+   * ======================================================================== */
+  
+  /* LCD RS (PB1) and EN (PB2) control lines: push-pull outputs (initially low) */
+  HAL_GPIO_WritePin(GPIOB, LCD_RS_Pin|LCD_EN_Pin, GPIO_PIN_RESET);
+  GPIO_InitStruct.Pin = LCD_RS_Pin|LCD_EN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /* PB12 MFRC522 RST */
+  /* LCD D4-D7 (PB10-PB13) data lines: push-pull outputs (initially low) */
+  HAL_GPIO_WritePin(GPIOB, LCD_D4_Pin|LCD_D5_Pin|LCD_D6_Pin|LCD_D7_Pin, GPIO_PIN_RESET);
+  GPIO_InitStruct.Pin = LCD_D4_Pin|LCD_D5_Pin|LCD_D6_Pin|LCD_D7_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /* ========================================================================
+   * MFRC522 Hardware Reset (GPIOB)
+   * ======================================================================== */
+  
+  /* PB12 RST (reset pin, active high, default to HIGH for normal operation) */
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
   GPIO_InitStruct.Pin = GPIO_PIN_12;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /* Buzzer PA8 */
+  /* ========================================================================
+   * Buzzer Output (GPIOA)
+   * ======================================================================== */
+  
+  /* PA8 Buzzer (active high PWM, default LOW for silent state) */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
   GPIO_InitStruct.Pin = GPIO_PIN_8;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /* Exit button PC13 input pull-up (active low) */
+  /* ========================================================================
+   * Button Input (GPIOC)
+   * ======================================================================== */
+  
+  /* PC13 EXIT button (input with pull-up, active low) */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /* Keep PC14/15 as input pull-up if present */
+  /* PC14-PC15 Reserved buttons (input with pull-up for safety) */
   GPIO_InitStruct.Pin = GPIO_PIN_14|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /* CS (PA4) default HIGH */
+  /* ========================================================================
+   * SPI1 Bus Pins (GPIOA)
+   * ======================================================================== */
+  
+  /* PA4 CS (chip select, manual control, start HIGH for no selection) */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
   GPIO_InitStruct.Pin = GPIO_PIN_4;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /* SPI1 pins PA5/PA6/PA7 AF */
+  /* PA5/PA6/PA7 SPI1 bus (SCK, MISO, MOSI as alternate function) */
   GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
@@ -516,33 +286,91 @@ static void MX_GPIO_Init(void) {
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 }
 
+/* ============================================================================
+ * System Clock Configuration
+ * ============================================================================ */
+
+/**
+ * SystemClock_Config
+ * @brief Configure system clock to 72 MHz using HSI PLL
+ *
+ * Clock tree configuration:
+ * - Input: HSI (High Speed Internal oscillator) at 8 MHz
+ * - PLL Multiplier: 9 (8 MHz × 9 = 72 MHz)
+ * - System Clock (SYSCLK): 72 MHz (from PLL output)
+ * - AHB Clock (HCLK): 72 MHz (no divider, AHB prescaler = 1)
+ * - APB1 Clock (PCLK1): 36 MHz (APB1 prescaler = 2) [max 36 MHz on F303]
+ * - APB2 Clock (PCLK2): 72 MHz (APB2 prescaler = 1) [SPI clock domain]
+ * - UART2 Clock: PCLK1 = 36 MHz (USART2 on APB1 bus)
+ * - Flash Latency: 1 wait state (required for 72 MHz operation)
+ *
+ * This clock configuration gives:
+ * - SPI1 clock (APB2): Up to 72 MHz (actual SPI freq 72MHz / prescaler)
+ * - UART2 clock: 36 MHz (actual baud rate 36MHz / divider for 115200)
+ * - Peripheral timers: Various clocks on APB1 and APB2
+ *
+ * @return void
+ * @note Calls Error_Handler() if any clock configuration step fails
+ */
 void SystemClock_Config(void) {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
   RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
+  /* ========================================================================
+   * Oscillator Configuration (HSI + PLL)
+   * ======================================================================== */
+  
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
-  RCC_OscInitStruct.PLL.PREDIV = RCC_PREDIV_DIV1;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;  /* Use HSI (8 MHz) as PLL input */
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;          /* Multiply by 9: 8 MHz × 9 = 72 MHz */
+  RCC_OscInitStruct.PLL.PREDIV = RCC_PREDIV_DIV1;       /* No predivider on F303 */
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
 
+  /* ========================================================================
+   * Clock Distribution (SYSCLK, AHB, APB1, APB2)
+   * ======================================================================== */
+  
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;  /* Use PLL as SYSCLK source */
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;         /* HCLK = SYSCLK / 1 = 72 MHz */
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;          /* PCLK1 = HCLK / 2 = 36 MHz */
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;          /* PCLK2 = HCLK / 1 = 72 MHz */
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK) Error_Handler();
 
+  /* ========================================================================
+   * Peripheral Clock Configuration (UART2)
+   * ======================================================================== */
+  
   PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2;
-  PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
+  PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;  /* Use PCLK1 (36 MHz) for UART2 */
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) Error_Handler();
 }
 
+/* ============================================================================
+ * Error Handler
+ * ============================================================================ */
+
+/**
+ * Error_Handler
+ * @brief Fatal error handler - called when initialization fails
+ *
+ * If any critical system initialization fails (clock config, GPIO, SPI, etc.),
+ * this function is called to halt the system. Disables interrupts and enters
+ * an infinite loop to indicate system failure.
+ *
+ * In a production system, this might:
+ * - Flash an LED to signal error
+ * - Log error code to EEPROM
+ * - Trigger watchdog reset
+ * - Output error to debug UART before disable
+ *
+ * @return void (never returns)
+ */
 void Error_Handler(void) {
   __disable_irq();
   while (1) { }

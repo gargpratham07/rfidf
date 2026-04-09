@@ -1,0 +1,19 @@
+# STM32CubeIDE build artifacts and temporary files
+Debug/
+Drivers/
+*.o
+*.elf
+*.map
+*.list
+*.d
+*.su
+*.cyclo
+rfidf Debug.launch
+.cproject
+.project
+.settings/
+.dist/
+.vscode/
+*.swp
+*.swo
+*~
